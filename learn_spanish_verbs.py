@@ -5,9 +5,8 @@
 =============================================
 功能：
   1. 浏览模式 — 逐个动词浏览，听+看 6 种人称变位
-  2. 学习模式 — 按类别系统学习，自动朗读每个变位
-  3. 测验模式 — 听读音，回答动词原形+人称，计分
-  4. 拼写模式 — 听动词原形，默写拼写和中文意思
+  2. 测验模式 — 听读音，回答动词原形+主语人称(可选中文)，计分
+  3. 设置 — 语速/音量/语音
 
 依赖：pywin32, colorama
 安装：pip install pywin32 colorama
@@ -18,8 +17,29 @@ import os
 import time
 import random
 import traceback
+import json
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_error_log.txt')
+STARRED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_starred.json')
+
+# ---------- 星标动词管理 ----------
+starred_verbs = set()  # 存储星标动词的原形
+
+def load_starred():
+    global starred_verbs
+    try:
+        with open(STARRED_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            starred_verbs = set(data.get('verbs', []))
+    except (FileNotFoundError, json.JSONDecodeError):
+        starred_verbs = set()
+
+def save_starred():
+    try:
+        with open(STARRED_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'verbs': list(starred_verbs)}, f, ensure_ascii=False)
+    except:
+        pass
 
 def log_error(msg: str):
     try:
@@ -307,7 +327,8 @@ def print_title(text: str):
     print()
 
 def print_verb_header(verb: dict, idx: int, total: int):
-    print(Fore.MAGENTA + Style.BRIGHT + f"--- [{idx+1}/{total}] ---")
+    star_marker = " ⭐" if verb['infinitive'] in starred_verbs else ""
+    print(Fore.MAGENTA + Style.BRIGHT + f"--- [{idx+1}/{total}]{star_marker} ---")
     print(Fore.GREEN + Style.BRIGHT + f"  动词原形: {verb['infinitive']}")
     print(Fore.WHITE + f"  中文意思: {verb['cn']}")
     print(Fore.CYAN + f"  所属类别: {verb['category']}")
@@ -403,16 +424,29 @@ def speak_conjugations_shuffle(speaker: Speaker, verb: dict, mode: str):
 # ============================================================
 
 def browse_mode(speaker: Speaker):
-    total = len(VERBS)
+    # 星标动词优先排列
+    browse_list = []
+    for v in VERBS:
+        if v['infinitive'] in starred_verbs:
+            browse_list.append(v)
+    for v in VERBS:
+        if v['infinitive'] not in starred_verbs:
+            browse_list.append(v)
+    total = len(browse_list)
     idx = 0
     while True:
         clear_screen()
         print_title("1. 浏览模式 -- 逐个动词学习")
-        print(f"  当前: 第 {idx+1}/{total} 个动词")
-        print(f"  快捷键: [N]下一个 [P]上一个 [R]重读 [V]读变位表 [S]乱序读 [Q]返回")
+        star_info = ""
+        if browse_list[idx]['infinitive'] in starred_verbs:
+            star_info = f"  {Fore.YELLOW + Style.BRIGHT}⭐ 星标复习重点{Style.RESET_ALL}"
+        print(f"  当前: 第 {idx+1}/{total} 个动词{star_info}")
+        if starred_verbs:
+            print(f"  (星标动词已置顶，共 {Fore.YELLOW}{len([v for v in browse_list if v['infinitive'] in starred_verbs])}{Style.RESET_ALL} 个)")
+        print(f"  快捷键: [N]下一个 [P]上一个 [R]重读 [V]读变位表 [S]乱序读 [U]取消星标 [Q]返回")
         print_divider()
 
-        verb = VERBS[idx]
+        verb = browse_list[idx]
         print_verb_header(verb, idx, total)
         print_conjugation_table(verb)
 
@@ -453,93 +487,62 @@ def browse_mode(speaker: Speaker):
                     speak_conjugations_shuffle(speaker, verb, 'cnfirst')
                 else:
                     speak_conjugations_shuffle(speaker, verb, 'fast')
+            elif cmd in ('u', 'unstar'):
+                inf = verb['infinitive']
+                if inf in starred_verbs:
+                    starred_verbs.discard(inf)
+                    save_starred()
+                    print(Fore.YELLOW + f"     ⭐ 已取消星标: {inf}")
+                    # 刷新浏览列表（移除该动词的星标优先）
+                    browse_list = []
+                    for v in VERBS:
+                        if v['infinitive'] in starred_verbs:
+                            browse_list.append(v)
+                    for v in VERBS:
+                        if v['infinitive'] not in starred_verbs:
+                            browse_list.append(v)
+                    total = len(browse_list)
+                    if idx >= total:
+                        idx = total - 1
+                    break
+                else:
+                    print(Fore.WHITE + "     该动词未星标")
             elif cmd == 'q':
                 return
             else:
-                print(Fore.RED + "  [?] 未知命令，请使用 N/P/R/V/S/Q")
-
-# ============================================================
-#  学习模式
-# ============================================================
-
-def study_mode(speaker: Speaker):
-    categories = {}
-    for v in VERBS:
-        cat = v['category']
-        categories.setdefault(cat, []).append(v)
-
-    cat_names = list(categories.keys())
-    cat_idx = 0
-
-    while True:
-        clear_screen()
-        print_title("2. 学习模式 -- 按类别系统学习")
-
-        cat = cat_names[cat_idx]
-        verbs_in_cat = categories[cat]
-        print(f"\n  当前类别: {Fore.GREEN + Style.BRIGHT + cat}")
-        print(f"     包含 {len(verbs_in_cat)} 个动词")
-        print(f"\n  [N]下一类  [P]上一类  [S]开始学习本类  [Q]返回")
-
-        cmd = input(Fore.WHITE + "\n  >> 请输入命令: ").strip().lower()
-        if cmd in ('n', ''):
-            cat_idx = (cat_idx + 1) % len(cat_names)
-            continue
-        elif cmd == 'p':
-            cat_idx = (cat_idx - 1) % len(cat_names)
-            continue
-        elif cmd == 'q':
-            return
-        elif cmd == 's':
-            _study_category(speaker, cat, verbs_in_cat)
-        else:
-            print(Fore.RED + "  [?] 未知命令")
-
-def _study_category(speaker: Speaker, cat_name: str, verbs_in_cat: list):
-    for vi, verb in enumerate(verbs_in_cat):
-        clear_screen()
-        print_title(f"2. 学习模式 -- {cat_name}")
-        print(f"  动词 {vi+1}/{len(verbs_in_cat)}")
-        print_divider()
-        print_verb_header(verb, vi, len(verbs_in_cat))
-        print_conjugation_table(verb)
-
-        # 朗读原形 + 中文
-        print(Fore.GREEN + ">> 朗读动词原形和意思...")
-        speaker.say(verb['infinitive'])
-        time.sleep(0.3)
-        speaker.say(verb['cn'])
-        time.sleep(0.3)
-
-        # 朗读 6 个变位 —— 主语+变位 连读
-        speak_conjugations(speaker, verb)
-
-        print(Fore.GREEN + "\n  [OK] 本动词学习完毕！")
-        if verb.get('example'):
-            print(Fore.YELLOW + f"  例句: {verb['example']}")
-            speaker.say(verb['example'])
-
-        if vi < len(verbs_in_cat) - 1:
-            cmd = input(Fore.WHITE + "\n  按 Enter 继续下一个动词 (Q 退出): ").strip().lower()
-            if cmd == 'q':
-                return
-        else:
-            input(Fore.WHITE + "\n  本类别学习完毕！按 Enter 返回: ")
-
+                print(Fore.RED + "  [?] 未知命令，请使用 N/P/R/V/S/U/Q")
 # ============================================================
 #  测验模式
 # ============================================================
 
+def normalize_accent(s: str) -> str:
+    """去掉西班牙语重音符号，用于容错匹配（á→a, é→e, í→i, ó→o, ú→u, ü→u, ñ→n）"""
+    replacements = str.maketrans('áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')
+    return s.translate(replacements).lower()
+
 def quiz_mode(speaker: Speaker):
     clear_screen()
-    print_title("3. 测验模式 -- 听读音回答")
+    print_title("2. 测验模式 -- 听读音回答")
 
     print("\n  规则说明：")
     print("  - 你会听到一个主语 + 动词变位（如 'él habla'、'nosotras comemos'）")
-    print("  - 请输入: 动词原形 人称(序号 1-6)")
-    print("  - 人称序号: 1=yo  2=tú  3=él/ella/usted  4=nosotros/as  5=vosotros/as  6=ellos/ellas/ustedes")
-    print("  - 例如听到 'ella habla'，回答: hablar 3")
-    print("  - 也可以直接输入 q 退出测验")
+    print("  - 请输入: 动词原形 主语人称")
+    print("  - 主语人称可以写西班牙语（él, ella, yo...）或中文（他, 她, 我...）")
+    print("  - 例如听到 'ella habla'，回答: hablar ella  或  hablar 她")
+    print("  - 也可以输入 R 重听  Q 退出测验")
+    print()
+
+    print("  主语人称参考:")
+    print("  ┌─────────────────────────┬──────────────────────────┐")
+    print("  │ 西班牙语                 │ 中文                      │")
+    print("  ├─────────────────────────┼──────────────────────────┤")
+    print("  │ yo                      │ 我                       │")
+    print("  │ tú                      │ 你                       │")
+    print("  │ él / ella / usted       │ 他 / 她 / 您              │")
+    print("  │ nosotros / nosotras     │ 我们                     │")
+    print("  │ vosotros / vosotras     │ 你们                     │")
+    print("  │ ellos / ellas / ustedes │ 他们 / 她们 / 诸位        │")
+    print("  └─────────────────────────┴──────────────────────────┘")
     print()
 
     print("  请选择题库范围：")
@@ -562,6 +565,10 @@ def quiz_mode(speaker: Speaker):
     else:
         pool = VERBS
 
+    print()
+    cn_choice = input(Fore.WHITE + "  >> 是否包含中文翻译？(Y/N，默认 N): ").strip().lower()
+    include_cn = cn_choice in ('y', 'yes')
+
     random.shuffle(pool)
     questions = []
     for v in pool:
@@ -573,7 +580,9 @@ def quiz_mode(speaker: Speaker):
 
     for qi, (verb, conj_idx) in enumerate(questions):
         clear_screen()
-        print_title(f"3. 测验模式 -- 第 {qi+1}/{total} 题  (得分: {score})")
+        print_title(f"2. 测验模式 -- 第 {qi+1}/{total} 题  (得分: {score})")
+        print_divider()
+        print(Fore.WHITE + "  主语参考: yo=我 tú=你 él=他 ella=她 usted=您 nosotros=我们 nosotras=我们 vosotros=你们 vosotras=你们 ellos=他们 ellas=她们 ustedes=诸位")
         print_divider()
 
         subj_display, subj_cn = SUBJECTS[conj_idx]
@@ -586,27 +595,28 @@ def quiz_mode(speaker: Speaker):
         print(Fore.GREEN + f">> 请听题...")
         speaker.say(phrase)
 
-        answer = input(Fore.WHITE + "\n  >> 请输入 [动词原形 人称1-6] (R重听 Q退出): ").strip()
+        prompt_text = "动词原形 主语人称 中文意思" if include_cn else "动词原形 主语人称"
+        answer = input(Fore.WHITE + f"\n  >> 请输入 [{prompt_text}] (R重听 Q退出): ").strip()
 
         if answer.lower() == 'q':
             break
         elif answer.lower() == 'r':
             speaker.say(phrase)
-            answer = input(Fore.WHITE + "  >> 请输入 [动词原形 人称1-6]: ").strip()
+            answer = input(Fore.WHITE + f"  >> 请输入 [{prompt_text}]: ").strip()
 
         if answer.lower() == 'q':
             break
 
         parts = answer.strip().split()
         correct_inf = verb['infinitive']
-        correct_person = str(conj_idx + 1)
 
         user_inf = parts[0].lower() if len(parts) >= 1 else ''
-        user_person = parts[1] if len(parts) >= 2 else ''
+        user_pronoun_raw = parts[1] if len(parts) >= 2 else ''
+        user_cn_raw = parts[2] if len(parts) >= 3 else ''
 
-        inf_ok = (user_inf == correct_inf)
-        person_ok = (user_person == correct_person)
-        correct = inf_ok and person_ok
+        inf_ok = (normalize_accent(user_inf) == normalize_accent(correct_inf))
+        pronoun_ok = (normalize_accent(user_pronoun_raw) == normalize_accent(spoken_subject)) or (user_pronoun_raw == spoken_cn)
+        correct = inf_ok and pronoun_ok
 
         cn_phrase_q = f"{spoken_cn}{verb['cn']}"
         if correct:
@@ -616,9 +626,33 @@ def quiz_mode(speaker: Speaker):
             print(Fore.RED + Style.BRIGHT + f"\n  [X] 错误！")
             if not inf_ok:
                 print(Fore.RED + f"     动词原形: 你答 '{user_inf}'，正确是 '{correct_inf}'")
-            if not person_ok:
-                print(Fore.RED + f"     人称: 你答 '{user_person}'，正确是 '{correct_person}' ({subj_display})")
+            if not pronoun_ok:
+                print(Fore.RED + f"     主语人称: 你答 '{user_pronoun_raw}'，正确是 '{spoken_subject}' 或 '{spoken_cn}'")
             print(Fore.YELLOW + f"     正确答案: {verb['infinitive']} ({verb['cn']}) -- {spoken_subject} {conj} → {cn_phrase_q}")
+
+        # 中文翻译：自检模式，不计分
+        if include_cn:
+            if user_cn_raw:
+                print(Fore.CYAN + f"     你的翻译: {user_cn_raw}  |  参考翻译: {verb['cn']}")
+            else:
+                print(Fore.CYAN + f"     参考翻译: {verb['cn']}")
+
+        # 写错了询问是否星标
+        if not correct:
+            inf = verb['infinitive']
+            if inf in starred_verbs:
+                print(Fore.YELLOW + f"     ⭐ 已星标复习重点")
+            else:
+                star_ans = input(Fore.WHITE + "  >> 星标该动词作为复习重点？(Y/N，默认 N): ").strip().lower()
+                if star_ans in ('y', 'yes'):
+                    starred_verbs.add(inf)
+                    save_starred()
+                    print(Fore.YELLOW + f"     ⭐ 已添加星标: {inf}")
+        else:
+            # 答对了，显示星标状态
+            inf = verb['infinitive']
+            if inf in starred_verbs:
+                print(Fore.GREEN + f"     ⭐ 已星标（你之前标记的复习重点）")
 
         print()
         print(Fore.WHITE + Style.BRIGHT + f"  {'主格人称代词':<26} {'变位':<16} {'西 → 中'}")
@@ -632,7 +666,7 @@ def quiz_mode(speaker: Speaker):
             input(Fore.WHITE + "\n  按 Enter 继续下一题: ")
 
     clear_screen()
-    print_title("3. 测验结果")
+    print_title("2. 测验结果")
     pct = score / total * 100 if total > 0 else 0
     print(f"\n  得分: {Fore.GREEN + str(score)}/{total}  ({pct:.0f}%)")
     if pct == 100:
@@ -646,83 +680,13 @@ def quiz_mode(speaker: Speaker):
     input(Fore.WHITE + "\n  按 Enter 返回主菜单: ")
 
 # ============================================================
-#  拼写模式
-# ============================================================
-
-def spelling_mode(speaker: Speaker):
-    clear_screen()
-    print_title("4. 拼写模式 -- 听发音默写")
-
-    print("\n  规则说明：")
-    print("  - 你会听到一个动词原形的发音")
-    print("  - 请输入: 拼写 中文意思")
-    print("  - 例如听到 'hablar'，回答: hablar 说话")
-    print()
-
-    pool = VERBS.copy()
-    random.shuffle(pool)
-
-    score = 0
-    total = len(pool)
-
-    for qi, verb in enumerate(pool):
-        clear_screen()
-        print_title(f"4. 拼写模式 -- 第 {qi+1}/{total} 题  (得分: {score})")
-        print_divider()
-
-        print(Fore.GREEN + ">> 请听动词发音...")
-        speaker.say(verb['infinitive'])
-
-        print(Fore.CYAN + f"  提示: 属于「{verb['category']}」")
-        print()
-
-        answer = input(Fore.WHITE + "  >> 请输入 [拼写 中文意思] (R重听 Q退出): ").strip()
-
-        if answer.lower() == 'q':
-            break
-        elif answer.lower() == 'r':
-            speaker.say(verb['infinitive'])
-            answer = input(Fore.WHITE + "  >> 请输入 [拼写 中文意思]: ").strip()
-
-        if answer.lower() == 'q':
-            break
-
-        parts = answer.strip().split(maxsplit=1)
-        user_spelling = parts[0].lower() if len(parts) >= 1 else ''
-        user_cn = parts[1] if len(parts) >= 2 else ''
-
-        spell_ok = (user_spelling == verb['infinitive'])
-        cn_ok = (user_cn == verb['cn'])
-
-        if spell_ok and cn_ok:
-            print(Fore.GREEN + Style.BRIGHT + f"\n  [OK] 完全正确！{verb['infinitive']} -- {verb['cn']}")
-            score += 1
-        else:
-            if not spell_ok:
-                print(Fore.RED + f"  [X] 拼写错误: 你写 '{user_spelling}'，正确是 '{verb['infinitive']}'")
-            if not cn_ok:
-                print(Fore.RED + f"  [X] 意思错误: 你写 '{user_cn}'，正确是 '{verb['cn']}'")
-            print(Fore.YELLOW + f"     正确答案: {verb['infinitive']} -- {verb['cn']}  ({verb['category']})")
-
-        if spell_ok and not cn_ok:
-            score += 0.5
-
-        if qi < total - 1:
-            input(Fore.WHITE + "\n  按 Enter 继续下一题: ")
-
-    clear_screen()
-    print_title("4. 拼写测验结果")
-    print(f"\n  得分: {Fore.GREEN + str(score)}/{total}")
-    input(Fore.WHITE + "\n  按 Enter 返回主菜单: ")
-
-# ============================================================
 #  设置
 # ============================================================
 
 def settings_menu(speaker: Speaker):
     while True:
         clear_screen()
-        print_title("5. 设置")
+        print_title("3. 设置")
         if speaker.tts_enabled:
             print(f"  当前语速: {Fore.GREEN}{speaker.get_rate()}  (-10 ~ 10)")
             print(f"  当前音量: {Fore.GREEN}{speaker.get_volume()}  (0 ~ 100)")
@@ -790,10 +754,8 @@ def main_menu(speaker: Speaker):
         print_divider()
         print()
         print("  " + Fore.GREEN + Style.BRIGHT + "1. 浏览模式" + Fore.WHITE + "  -- 逐个浏览动词、听发音")
-        print("  " + Fore.GREEN + Style.BRIGHT + "2. 学习模式" + Fore.WHITE + "  -- 按类别自动系统学习")
-        print("  " + Fore.GREEN + Style.BRIGHT + "3. 测验模式" + Fore.WHITE + "  -- 听读音，回答动词原形+人称")
-        print("  " + Fore.GREEN + Style.BRIGHT + "4. 拼写模式" + Fore.WHITE + "  -- 听发音，默写拼写和意思")
-        print("  " + Fore.GREEN + Style.BRIGHT + "5. 设置" + Fore.WHITE + "      -- 语速/音量/语音")
+        print("  " + Fore.GREEN + Style.BRIGHT + "2. 测验模式" + Fore.WHITE + "  -- 听读音，回答动词原形+主语人称(可选中文)")
+        print("  " + Fore.GREEN + Style.BRIGHT + "3. 设置" + Fore.WHITE + "      -- 语速/音量/语音")
         print("  " + Fore.GREEN + Style.BRIGHT + "Q. 退出")
         print()
 
@@ -802,12 +764,8 @@ def main_menu(speaker: Speaker):
         if cmd == '1':
             browse_mode(speaker)
         elif cmd == '2':
-            study_mode(speaker)
-        elif cmd == '3':
             quiz_mode(speaker)
-        elif cmd == '4':
-            spelling_mode(speaker)
-        elif cmd == '5':
+        elif cmd == '3':
             settings_menu(speaker)
         elif cmd == 'q':
             clear_screen()
@@ -823,6 +781,7 @@ def main_menu(speaker: Speaker):
 
 if __name__ == '__main__':
     try:
+        load_starred()
         print("正在初始化 SAPI 双语音引擎...")
         speaker = Speaker()
         if speaker.tts_enabled:
