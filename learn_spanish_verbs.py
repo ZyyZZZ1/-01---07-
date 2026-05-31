@@ -4,9 +4,10 @@
 西班牙语动词变位 —— 听觉主导学习工具
 =============================================
 功能：
-  1. 浏览模式 — 逐个动词浏览，听+看 6 种人称变位
+  1. 浏览模式 — 逐个动词浏览，听+看 6 种人称变位（不规则高亮+解释）
   2. 测验模式 — 听读音，回答动词原形+主语人称(可选中文)，计分
-  3. 设置 — 语速/音量/语音
+  3. 听写模式 — 听原形+人称，写出变位形式，计分
+  4. 设置 — 语速/音量/语音
 
 依赖：pywin32, colorama
 安装：pip install pywin32 colorama
@@ -18,6 +19,13 @@ import time
 import random
 import traceback
 import json
+
+# 修复 Windows GBK 终端无法编码西班牙语字符（¡¿áéíóúñ）的问题
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_error_log.txt')
 STARRED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_starred.json')
@@ -170,6 +178,14 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["soy", "eres", "es", "somos", "sois", "son"],
         "example": "",
+        "highlights": {
+            0: ("soy", "完全换词根"),
+            1: ("eres", "完全换词根"),
+            2: ("es",   "完全换词根"),
+            3: ("somos", "完全换词根"),
+            4: ("sois",  "完全换词根"),
+            5: ("son",   "完全换词根"),
+        },
     },
     {
         "infinitive": "estar",
@@ -177,6 +193,12 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["estoy", "estás", "está", "estamos", "estáis", "están"],
         "example": "",
+        "highlights": {
+            0: ("oy", "yo 形 +y 缓冲"),
+            1: ("ás", "重音后移 → ás"),
+            2: ("á",  "重音后移 → á"),
+            5: ("án", "重音后移 → án"),
+        },
     },
     {
         "infinitive": "tener",
@@ -184,6 +206,12 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["tengo", "tienes", "tiene", "tenemos", "tenéis", "tienen"],
         "example": "",
+        "highlights": {
+            0: ("go", "yo 形 +go 缓冲辅音"),
+            1: ("ie", "e→ie 元音裂化"),
+            2: ("ie", "e→ie 元音裂化"),
+            5: ("ie", "e→ie 元音裂化"),
+        },
     },
     {
         "infinitive": "poder",
@@ -191,6 +219,12 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["puedo", "puedes", "puede", "podemos", "podéis", "pueden"],
         "example": "",
+        "highlights": {
+            0: ("ue", "o→ue 元音裂化"),
+            1: ("ue", "o→ue 元音裂化"),
+            2: ("ue", "o→ue 元音裂化"),
+            5: ("ue", "o→ue 元音裂化"),
+        },
     },
     {
         "infinitive": "poner",
@@ -198,6 +232,9 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["pongo", "pones", "pone", "ponemos", "ponéis", "ponen"],
         "example": "",
+        "highlights": {
+            0: ("go", "yo 形 +go 缓冲辅音"),
+        },
     },
     {
         "infinitive": "venir",
@@ -205,6 +242,12 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["vengo", "vienes", "viene", "venimos", "venís", "vienen"],
         "example": "",
+        "highlights": {
+            0: ("go", "yo 形 +go 缓冲辅音（同 tener）"),
+            1: ("ie", "e→ie 元音裂化"),
+            2: ("ie", "e→ie 元音裂化"),
+            5: ("ie", "e→ie 元音裂化"),
+        },
     },
     {
         "infinitive": "ir",
@@ -212,6 +255,14 @@ VERBS = [
         "category": "不规则动词",
         "conjugations": ["voy", "vas", "va", "vamos", "vais", "van"],
         "example": "",
+        "highlights": {
+            0: ("voy", "完全换词根"),
+            1: ("vas", "完全换词根"),
+            2: ("va",  "完全换词根"),
+            3: ("vamos", "完全换词根"),
+            4: ("vais",  "完全换词根"),
+            5: ("van",   "完全换词根"),
+        },
     },
 ]
 
@@ -341,14 +392,68 @@ def make_cn_phrase(person_idx: int, sub_idx: int, verb_cn: str) -> str:
     subj_cn = SUBJECTS_CN_SPLIT[person_idx][sub_idx]
     return f"{subj_cn}{verb_cn}"
 
-def print_conjugation_table(verb: dict):
+def visible_len(s: str) -> int:
+    """计算去掉 ANSI 转义码后的可见字符长度"""
+    import re
+    return len(re.sub(r'\x1b\[[0-9;]*m', '', s))
+
+def pad_visible(s: str, width: int) -> str:
+    """在字符串后补空格到可见宽度 width"""
+    need = width - visible_len(s)
+    return s + (' ' * max(0, need))
+
+def format_highlighted_conj(conj: str, hl_info, has_irregular: bool) -> str:
+    """给变位着色：不规则字母红色高亮，其余黄色。规则动词为亮黄，不规则动词中规则位置为亮绿"""
+    if hl_info:
+        hl_letters, _ = hl_info
+        idx_pos = conj.lower().find(hl_letters.lower())
+        if idx_pos >= 0:
+            before = conj[:idx_pos]
+            hl_part = conj[idx_pos:idx_pos + len(hl_letters)]
+            after = conj[idx_pos + len(hl_letters):]
+            return (Fore.YELLOW + Style.BRIGHT + before +
+                    Fore.RED + Style.BRIGHT + hl_part +
+                    Fore.YELLOW + Style.BRIGHT + after)
+        else:
+            return Fore.RED + Style.BRIGHT + conj
+    else:
+        if has_irregular:
+            return Fore.GREEN + Style.BRIGHT + conj
+        else:
+            return Fore.YELLOW + Style.BRIGHT + conj
+
+
+def print_conjugation_table(verb: dict, highlight_idx: int = -1):
+    """打印变位表。一行一个变位，不规则字母红色高亮，解释紧跟行尾。"""
+    highlights = verb.get('highlights', {})
+    has_irregular = bool(highlights)
+
     print()
-    print(Fore.WHITE + Style.BRIGHT + f"  {'主格人称代词':<26} {'变位':<16} {'西 → 中':<20}")
-    print(Fore.WHITE + "  " + "-" * 64)
+    if has_irregular:
+        print(Fore.MAGENTA + Style.BRIGHT + "  🔴 红色字母 = 不规则变化  |  "
+              + Fore.GREEN + "nosotros/vosotros 通常规则")
+        print()
+
+    print(Fore.WHITE + Style.BRIGHT + f"  {'主格人称代词':<26}{'变位':<14}  {'西 → 中'}")
+    print(Fore.WHITE + "  " + "-" * 62)
     for i, (subj_es, subj_cn) in enumerate(SUBJECTS):
         conj = verb['conjugations'][i]
         cn_phrase = make_cn_phrase(i, 0, verb['cn'])
-        print(f"  {Fore.CYAN + subj_es:<26} {Fore.YELLOW + Style.BRIGHT + conj:<16} {Fore.GREEN + conj:<12} → {Fore.WHITE + cn_phrase}")
+        marker = Fore.CYAN + " ◀" if i == highlight_idx else ""
+
+        # 变位着色
+        if i in highlights:
+            hl_letters, hl_note = highlights[i]
+            conj_col = format_highlighted_conj(conj, highlights[i], has_irregular)
+            conj_plain = conj
+            note = f"  {Fore.RED}{hl_note}"
+        else:
+            conj_col = Fore.GREEN + Style.BRIGHT + conj if has_irregular else Fore.YELLOW + Style.BRIGHT + conj
+            conj_plain = conj
+            note = ""
+
+        print(f"  {Fore.CYAN + subj_es:<26}{pad_visible(conj_col, 16)} {Fore.WHITE}{conj_plain:<12} → {Fore.WHITE}{cn_phrase}{marker}{note}")
+
     print()
 
 def print_divider():
@@ -356,15 +461,18 @@ def print_divider():
 
 def speak_conjugations(speaker: Speaker, verb: dict):
     """朗读全部变位 —— 西语 + 中文都念，每个子主语配匹配的中文"""
+    highlights = verb.get('highlights', {})
+    has_irregular = bool(highlights)
     print(Fore.GREEN + ">> 朗读全部变位（西语 → 中文，复合主语已拆开）...")
     for i, (subj_display, _) in enumerate(SUBJECT_SPLIT):
         conj = verb['conjugations'][i]
+        conj_col = format_highlighted_conj(conj, highlights.get(i), has_irregular)
         parts_es = SUBJECT_SPLIT[i][1]
         parts_cn = SUBJECTS_CN_SPLIT[i]
         for j, subj_es in enumerate(parts_es):
             cn_phrase = make_cn_phrase(i, j, verb['cn'])
             es_phrase = f"{subj_es} {conj}"
-            print(f"     {Fore.CYAN + subj_es:<14} {Fore.YELLOW + conj:<13} → {Fore.GREEN + cn_phrase}")
+            print(f"     {Fore.CYAN + subj_es:<14} {pad_visible(conj_col, 16)} → {Fore.GREEN + cn_phrase}")
             speaker.say(es_phrase)
             time.sleep(0.15)
             speaker.say(cn_phrase)
@@ -376,15 +484,18 @@ def speak_conjugations_shuffle(speaker: Speaker, verb: dict, mode: str):
     """乱序朗读全部变位
     mode: 'cn'=西语+中文  'fast'=仅西语连读  'pause'=仅西语主语停顿
           'cnfirst'=中文先出(等反应)再西语"""
+    highlights = verb.get('highlights', {})
+    has_irregular = bool(highlights)
     all_pairs = []
     for i in range(6):
         conj = verb['conjugations'][i]
+        conj_col = format_highlighted_conj(conj, highlights.get(i), has_irregular)
         parts_es = SUBJECT_SPLIT[i][1]
         parts_cn = SUBJECTS_CN_SPLIT[i]
         for j, subj_es in enumerate(parts_es):
             cn_subj = parts_cn[j]
             cn_phrase = f"{cn_subj}{verb['cn']}"
-            all_pairs.append((subj_es, conj, cn_phrase))
+            all_pairs.append((subj_es, conj, conj_col, cn_phrase))
     random.shuffle(all_pairs)
 
     mode_desc = {
@@ -394,25 +505,25 @@ def speak_conjugations_shuffle(speaker: Speaker, verb: dict, mode: str):
         "cnfirst": "中文先出（等反应）→ 西语验证"
     }[mode]
     print(Fore.GREEN + f">> 乱序朗读全部变位（{mode_desc}）...")
-    for subj_es, conj, cn_phrase in all_pairs:
+    for subj_es, conj, conj_col, cn_phrase in all_pairs:
         if mode == 'cn':
-            print(f"     {Fore.CYAN + subj_es:<14} {Fore.YELLOW + conj:<13} → {Fore.GREEN + cn_phrase}")
+            print(f"     {Fore.CYAN + subj_es:<14} {pad_visible(conj_col, 16)} → {Fore.GREEN + cn_phrase}")
             speaker.say(f"{subj_es} {conj}")
             time.sleep(0.15)
             speaker.say(cn_phrase)
             time.sleep(0.2)
         elif mode == 'fast':
-            print(f"     {Fore.CYAN + subj_es:<14} {Fore.YELLOW + conj}")
+            print(f"     {Fore.CYAN + subj_es:<14} {conj_col}")
             speaker.say(f"{subj_es} {conj}")
             time.sleep(0.12)
         elif mode == 'pause':
-            print(f"     {Fore.CYAN + subj_es:<14} {Fore.YELLOW + conj}")
+            print(f"     {Fore.CYAN + subj_es:<14} {conj_col}")
             speaker.say(subj_es)
             time.sleep(0.35)
             speaker.say(conj)
             time.sleep(0.15)
         elif mode == 'cnfirst':
-            print(f"     {Fore.GREEN + cn_phrase:<12} → {Fore.CYAN + subj_es:<14} {Fore.YELLOW + conj}")
+            print(f"     {Fore.GREEN + cn_phrase:<12} → {Fore.CYAN + subj_es:<14} {conj_col}")
             speaker.say(cn_phrase)
             time.sleep(1.2)  # 给用户反应时间：听到中文后回忆西语
             speaker.say(f"{subj_es} {conj}")
@@ -443,7 +554,7 @@ def browse_mode(speaker: Speaker):
         print(f"  当前: 第 {idx+1}/{total} 个动词{star_info}")
         if starred_verbs:
             print(f"  (星标动词已置顶，共 {Fore.YELLOW}{len([v for v in browse_list if v['infinitive'] in starred_verbs])}{Style.RESET_ALL} 个)")
-        print(f"  快捷键: [N]下一个 [P]上一个 [R]重读 [V]读变位表 [S]乱序读 [U]取消星标 [Q]返回")
+        print(f"  快捷键: [N]下一个 [P]上一个 [R]重读 [V]读变位表 [S]乱序读 [*]切换星标 [Q]返回")
         print_divider()
 
         verb = browse_list[idx]
@@ -487,30 +598,35 @@ def browse_mode(speaker: Speaker):
                     speak_conjugations_shuffle(speaker, verb, 'cnfirst')
                 else:
                     speak_conjugations_shuffle(speaker, verb, 'fast')
-            elif cmd in ('u', 'unstar'):
+            elif cmd in ('*', 'star', 'u', 'unstar'):
                 inf = verb['infinitive']
                 if inf in starred_verbs:
                     starred_verbs.discard(inf)
                     save_starred()
                     print(Fore.YELLOW + f"     ⭐ 已取消星标: {inf}")
-                    # 刷新浏览列表（移除该动词的星标优先）
-                    browse_list = []
-                    for v in VERBS:
-                        if v['infinitive'] in starred_verbs:
-                            browse_list.append(v)
-                    for v in VERBS:
-                        if v['infinitive'] not in starred_verbs:
-                            browse_list.append(v)
-                    total = len(browse_list)
-                    if idx >= total:
-                        idx = total - 1
-                    break
                 else:
-                    print(Fore.WHITE + "     该动词未星标")
+                    starred_verbs.add(inf)
+                    save_starred()
+                    print(Fore.YELLOW + Style.BRIGHT + f"     ⭐ 已添加星标: {inf}")
+                # 刷新浏览列表（星标动词置顶）
+                browse_list = []
+                for v in VERBS:
+                    if v['infinitive'] in starred_verbs:
+                        browse_list.append(v)
+                for v in VERBS:
+                    if v['infinitive'] not in starred_verbs:
+                        browse_list.append(v)
+                total = len(browse_list)
+                # 找到当前动词在新列表中的位置
+                for new_i, v in enumerate(browse_list):
+                    if v['infinitive'] == inf:
+                        idx = new_i
+                        break
+                break
             elif cmd == 'q':
                 return
             else:
-                print(Fore.RED + "  [?] 未知命令，请使用 N/P/R/V/S/U/Q")
+                print(Fore.RED + "  [?] 未知命令，请使用 N/P/R/V/S/*/Q")
 # ============================================================
 #  测验模式
 # ============================================================
@@ -655,12 +771,7 @@ def quiz_mode(speaker: Speaker):
                 print(Fore.GREEN + f"     ⭐ 已星标（你之前标记的复习重点）")
 
         print()
-        print(Fore.WHITE + Style.BRIGHT + f"  {'主格人称代词':<26} {'变位':<16} {'西 → 中'}")
-        print(Fore.WHITE + "  " + "-" * 64)
-        for j, (s_es, s_cn) in enumerate(SUBJECTS):
-            marker = " <-- 本题" if j == conj_idx else ""
-            cn_p = make_cn_phrase(j, 0, verb['cn'])
-            print(f"  {Fore.CYAN + s_es:<26} {Fore.YELLOW + verb['conjugations'][j]:<16} {Fore.GREEN + verb['conjugations'][j]:<12} → {Fore.WHITE + cn_p}" + marker)
+        print_conjugation_table(verb, highlight_idx=conj_idx)
 
         if qi < total - 1:
             input(Fore.WHITE + "\n  按 Enter 继续下一题: ")
@@ -680,13 +791,125 @@ def quiz_mode(speaker: Speaker):
     input(Fore.WHITE + "\n  按 Enter 返回主菜单: ")
 
 # ============================================================
+#  听写变位模式
+# ============================================================
+
+def dictation_mode(speaker: Speaker):
+    clear_screen()
+    print_title("3. 听写模式 -- 听原形+人称，写出变位")
+
+    print("\n  规则说明：")
+    print("  - 你会听到一个动词原形，然后是一个人称呼（如 'tener ... yo'）")
+    print("  - 请写出该动词在该人称下的变位形式")
+    print("  - 例如听到 'tener ... yo'，回答: tengo")
+    print("  - 也可以输入 R 重听  Q 退出")
+    print()
+
+    print("  请选择题库范围：")
+    print("  1. 所有动词 (14个)")
+    print("  2. 仅规则动词 (7个)")
+    print("  3. 仅不规则动词 (7个)")
+    print("  4. 自定义数量")
+    scope = input(Fore.WHITE + "\n  >> 请选择 (1-4): ").strip()
+
+    if scope == '2':
+        pool = [v for v in VERBS if '规则' in v['category']]
+    elif scope == '3':
+        pool = [v for v in VERBS if '不规则' in v['category']]
+    elif scope == '4':
+        try:
+            n = int(input("  出题数量: ").strip())
+            pool = random.choices(VERBS, k=n)
+        except:
+            pool = VERBS
+    else:
+        pool = VERBS
+
+    questions = []
+    for v in pool:
+        i = random.randint(0, 5)
+        questions.append((v, i))
+    random.shuffle(questions)
+
+    score = 0
+    total = len(questions)
+
+    for qi, (verb, conj_idx) in enumerate(questions):
+        clear_screen()
+        print_title(f"3. 听写模式 -- 第 {qi+1}/{total} 题  (得分: {score})")
+        print_divider()
+
+        conj = verb['conjugations'][conj_idx]
+        spoken_subject, spoken_cn = pick_random_subject(conj_idx)
+
+        print(Fore.YELLOW + f"  动词原形: {verb['infinitive']} ({verb['cn']})")
+        print(Fore.CYAN + f"  人称: {spoken_subject} ({spoken_cn})")
+        print(Fore.GREEN + f">> 请听题...")
+        speaker.say(verb['infinitive'])
+        time.sleep(0.5)
+        speaker.say(spoken_subject)
+
+        answer = input(Fore.WHITE + "\n  >> 请输入变位形式 (R重听 Q退出): ").strip()
+
+        if answer.lower() == 'q':
+            break
+        elif answer.lower() == 'r':
+            speaker.say(verb['infinitive'])
+            time.sleep(0.5)
+            speaker.say(spoken_subject)
+            answer = input(Fore.WHITE + "  >> 请输入变位形式: ").strip()
+
+        if answer.lower() == 'q':
+            break
+
+        user_conj = answer.strip()
+        correct_conj = conj
+
+        conj_ok = (normalize_accent(user_conj) == normalize_accent(correct_conj))
+
+        if conj_ok:
+            print(Fore.GREEN + Style.BRIGHT + f"\n  [OK] 正确！{spoken_subject} {correct_conj}")
+            score += 1
+        else:
+            print(Fore.RED + Style.BRIGHT + f"\n  [X] 错误！")
+            print(Fore.RED + f"     你写: '{user_conj}'")
+            print(Fore.GREEN + f"     正确: '{correct_conj}'")
+            # 分析差异
+            diff_note = ""
+            if normalize_accent(user_conj[:-1]) == normalize_accent(correct_conj[:-1]):
+                diff_note = "（词干对了，注意词尾！）"
+            elif len(user_conj) == len(correct_conj):
+                diff_note = "（注意元音变化！）"
+            if diff_note:
+                print(Fore.YELLOW + f"     💡 {diff_note}")
+
+        print_conjugation_table(verb, highlight_idx=conj_idx)
+
+        if qi < total - 1:
+            input(Fore.WHITE + "\n  按 Enter 继续下一题: ")
+
+    clear_screen()
+    print_title("3. 听写测验结果")
+    pct = score / total * 100 if total > 0 else 0
+    print(f"\n  得分: {Fore.GREEN + str(score)}/{total}  ({pct:.0f}%)")
+    if pct == 100:
+        print(Fore.GREEN + Style.BRIGHT + "  满分！拼写完美！¡Perfecto!")
+    elif pct >= 80:
+        print(Fore.CYAN + "  很不错！多注意元音变化！")
+    elif pct >= 60:
+        print(Fore.YELLOW + "  还需要多写多练哦！¡Practica más!")
+    else:
+        print(Fore.RED + "  继续加油！拼写需要反复练习！¡Ánimo!")
+    input(Fore.WHITE + "\n  按 Enter 返回主菜单: ")
+
+# ============================================================
 #  设置
 # ============================================================
 
 def settings_menu(speaker: Speaker):
     while True:
         clear_screen()
-        print_title("3. 设置")
+        print_title("4. 设置")
         if speaker.tts_enabled:
             print(f"  当前语速: {Fore.GREEN}{speaker.get_rate()}  (-10 ~ 10)")
             print(f"  当前音量: {Fore.GREEN}{speaker.get_volume()}  (0 ~ 100)")
@@ -753,9 +976,10 @@ def main_menu(speaker: Speaker):
         print()
         print_divider()
         print()
-        print("  " + Fore.GREEN + Style.BRIGHT + "1. 浏览模式" + Fore.WHITE + "  -- 逐个浏览动词、听发音")
+        print("  " + Fore.GREEN + Style.BRIGHT + "1. 浏览模式" + Fore.WHITE + "  -- 逐个浏览动词、听发音（不规则高亮）")
         print("  " + Fore.GREEN + Style.BRIGHT + "2. 测验模式" + Fore.WHITE + "  -- 听读音，回答动词原形+主语人称(可选中文)")
-        print("  " + Fore.GREEN + Style.BRIGHT + "3. 设置" + Fore.WHITE + "      -- 语速/音量/语音")
+        print("  " + Fore.GREEN + Style.BRIGHT + "3. 听写模式" + Fore.WHITE + "  -- 听原形+人称，写出变位形式")
+        print("  " + Fore.GREEN + Style.BRIGHT + "4. 设置" + Fore.WHITE + "      -- 语速/音量/语音")
         print("  " + Fore.GREEN + Style.BRIGHT + "Q. 退出")
         print()
 
@@ -766,6 +990,8 @@ def main_menu(speaker: Speaker):
         elif cmd == '2':
             quiz_mode(speaker)
         elif cmd == '3':
+            dictation_mode(speaker)
+        elif cmd == '4':
             settings_menu(speaker)
         elif cmd == 'q':
             clear_screen()
